@@ -180,9 +180,20 @@ func (r *Reporter) printDeviation(dev patterns.Deviation) {
 }
 
 // ReportInit prints initialization results
-func (r *Reporter) ReportInit(patterns []patterns.Pattern, totalFiles int) {
+func (r *Reporter) ReportInit(patterns []patterns.Pattern, totalFiles int, language string) {
 	fmt.Println("Scanning codebase...")
-	fmt.Printf("→ Discovered %d Go files\n", totalFiles)
+	lang := "code"
+	switch language {
+	case "go":
+		lang = "Go"
+	case "typescript", "ts":
+		lang = "TypeScript"
+	case "javascript", "js":
+		lang = "JavaScript"
+	case "react":
+		lang = "React/TypeScript"
+	}
+	fmt.Printf("→ Discovered %d %s files\n", totalFiles, lang)
 	fmt.Println("→ Identified patterns:")
 
 	for _, p := range patterns {

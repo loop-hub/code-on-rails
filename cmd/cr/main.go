@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/loop-hub/code-on-rails/internal/analyzer"
@@ -92,7 +95,7 @@ func initCmd() *cobra.Command {
 
 			// Report results
 			rep := reporter.New(verbose)
-			rep.ReportInit(patterns, totalFiles)
+			rep.ReportInit(patterns, totalFiles, language)
 
 			return nil
 		},
@@ -123,8 +126,14 @@ func checkCmd() *cobra.Command {
 			// Get files to check
 			files := args
 			if len(files) == 0 {
+				// Detect language if not configured
+				lang := cfg.Language
+				if lang == "" {
+					lang = detectLanguage(".")
+				}
+
 				// Detect AI-generated files
-				det := detector.New(&cfg.Detection)
+				det := detector.NewWithLanguage(&cfg.Detection, lang)
 				files, err = det.DetectFiles(".")
 				if err != nil {
 					return fmt.Errorf("failed to detect AI files: %w", err)
@@ -132,7 +141,7 @@ func checkCmd() *cobra.Command {
 
 				if len(files) == 0 {
 					fmt.Println("No AI-generated files found.")
-					fmt.Println("Hint: Tag commits with [ai], [claude], [copilot], etc.")
+					fmt.Printf("Detected language: %s\n", lang)
 					return nil
 				}
 			}
@@ -333,9 +342,80 @@ func versionCmd() *cobra.Command {
 // Helper functions
 
 func detectLanguage(path string) string {
-	// Simple language detection based on files
-	// In real implementation, would check file extensions
-	return "go"
+	// Detect language based on project files
+	if path == "" {
+		path = "."
+	}
+
+	// Check for Go
+	if fileExists(path + "/go.mod") {
+		return "go"
+	}
+
+	// Check for TypeScript/React
+	if fileExists(path + "/tsconfig.json") {
+		// Check if it's a React project
+		if fileExists(path+"/package.json") && fileContains(path+"/package.json", "react") {
+			return "react"
+		}
+		return "typescript"
+	}
+
+	// Check for JavaScript/React
+	if fileExists(path + "/package.json") {
+		if fileContains(path+"/package.json", "react") {
+			return "react"
+		}
+		return "javascript"
+	}
+
+	// Default to detecting based on file prevalence
+	goCount := countFilesWithExtension(path, ".go")
+	tsCount := countFilesWithExtension(path, ".ts") + countFilesWithExtension(path, ".tsx")
+	jsCount := countFilesWithExtension(path, ".js") + countFilesWithExtension(path, ".jsx")
+
+	if goCount >= tsCount && goCount >= jsCount && goCount > 0 {
+		return "go"
+	}
+	if tsCount >= jsCount && tsCount > 0 {
+		return "typescript"
+	}
+	if jsCount > 0 {
+		return "javascript"
+	}
+
+	return "go" // Default fallback
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func fileContains(path string, substr string) bool {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(content), substr)
+}
+
+func countFilesWithExtension(dir string, ext string) int {
+	count := 0
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ext) {
+			count++
+		}
+		// Limit depth to avoid scanning too deep
+		if d.IsDir() && strings.Count(path, string(os.PathSeparator)) > 5 {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return count
 }
 
 func mergePatterns(existing, new []patterns.Pattern) int {
