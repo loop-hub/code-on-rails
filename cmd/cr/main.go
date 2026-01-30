@@ -21,6 +21,9 @@ var (
 	verbose   bool
 	aiModel   string
 	threshold float64
+	format    string
+	repoURL   string
+	commitSHA string
 )
 
 func main() {
@@ -123,15 +126,15 @@ func checkCmd() *cobra.Command {
 				cfg.Settings.AutoApproveThreshold = threshold
 			}
 
+			// Detect language if not configured
+			lang := cfg.Language
+			if lang == "" {
+				lang = detectLanguage(".")
+			}
+
 			// Get files to check
 			files := args
 			if len(files) == 0 {
-				// Detect language if not configured
-				lang := cfg.Language
-				if lang == "" {
-					lang = detectLanguage(".")
-				}
-
 				// Detect AI-generated files
 				det := detector.NewWithLanguage(&cfg.Detection, lang)
 				files, err = det.DetectFiles(".")
@@ -140,8 +143,14 @@ func checkCmd() *cobra.Command {
 				}
 
 				if len(files) == 0 {
-					fmt.Println("No AI-generated files found.")
-					fmt.Printf("Detected language: %s\n", lang)
+					if format == "json" {
+						fmt.Println(`{"summary":{"total_files":0},"auto_approved":[],"needs_review":[]}`)
+					} else if format == "github" {
+						fmt.Println("## 🤖 Code on Rails\n\n✨ No AI-generated code detected in this PR.")
+					} else {
+						fmt.Println("No AI-generated files found.")
+						fmt.Printf("Detected language: %s\n", lang)
+					}
 					return nil
 				}
 			}
@@ -162,16 +171,37 @@ func checkCmd() *cobra.Command {
 				matches = append(matches, *match)
 			}
 
-			// Report results
+			// Report results based on format
 			rep := reporter.New(verbose)
-			rep.Report(matches)
 
-			// Exit with error if any files failed
-			for _, match := range matches {
-				if !match.AutoApprove {
-					for _, dev := range match.Deviations {
-						if dev.Severity == patterns.SeverityError {
-							os.Exit(1)
+			// Get GitHub context from environment if not specified
+			if repoURL == "" {
+				repoURL = os.Getenv("GITHUB_REPOSITORY")
+				if repoURL != "" {
+					repoURL = "https://github.com/" + repoURL
+				}
+			}
+			if commitSHA == "" {
+				commitSHA = os.Getenv("GITHUB_SHA")
+			}
+
+			switch format {
+			case "json":
+				fmt.Println(rep.ReportJSON(matches, lang))
+			case "github":
+				fmt.Println(rep.FormatForGitHub(matches, repoURL, commitSHA))
+			default:
+				rep.Report(matches)
+			}
+
+			// Exit with error if any files failed (only in default mode)
+			if format == "" {
+				for _, match := range matches {
+					if !match.AutoApprove {
+						for _, dev := range match.Deviations {
+							if dev.Severity == patterns.SeverityError {
+								os.Exit(1)
+							}
 						}
 					}
 				}
@@ -182,6 +212,9 @@ func checkCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&aiModel, "ai-model", "a", "", "filter by AI model (claude, copilot, cursor, any)")
+	cmd.Flags().StringVarP(&format, "format", "f", "", "output format: json, github, or default (text)")
+	cmd.Flags().StringVar(&repoURL, "repo-url", "", "GitHub repository URL (for github format links)")
+	cmd.Flags().StringVar(&commitSHA, "sha", "", "Git commit SHA (for github format links)")
 	cmd.Flags().Float64VarP(&threshold, "threshold", "t", 0, "auto-approve threshold (0-100)")
 
 	return cmd
