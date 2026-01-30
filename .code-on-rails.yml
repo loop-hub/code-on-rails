@@ -1,0 +1,102 @@
+version: "1.0"
+language: go
+ai_source: any
+patterns:
+    - id: util_pattern
+      name: util
+      type: util
+      version: "1.0"
+      detection:
+        file_pattern: ""
+        func_pattern: ""
+        struct_pattern: ""
+        package_path: ""
+      structure:
+        elements:
+            - name: fmt
+              type: import
+              pattern: fmt
+              examples: []
+            - name: os
+              type: import
+              pattern: os
+              examples: []
+            - name: github.com/loop-hub/code-on-rails/pkg/patterns
+              type: import
+              pattern: github\.com/loop-hub/code-on-rails/pkg/patterns
+              examples: []
+        ordering: []
+        required:
+            - fmt
+            - os
+            - github.com/loop-hub/code-on-rails/pkg/patterns
+        optional: []
+      discovered:
+        - path: cmd/cr/main.go
+          similarity_score: 0.9
+          weight: 1
+        - path: internal/config/config.go
+          similarity_score: 0.9
+          weight: 1
+        - path: pkg/patterns/types.go
+          similarity_score: 0.9
+          weight: 1
+      confidence: 0.6
+      seen_count: 3
+    - id: service_pattern
+      name: service
+      type: service
+      version: "1.0"
+      detection:
+        file_pattern: '*_service.go'
+        func_pattern: ""
+        struct_pattern: type.*Service.*struct
+        package_path: '*/services'
+      structure:
+        elements:
+            - name: fmt
+              type: import
+              pattern: fmt
+              examples: []
+            - name: strings
+              type: import
+              pattern: strings
+              examples: []
+            - name: github.com/loop-hub/code-on-rails/pkg/patterns
+              type: import
+              pattern: github\.com/loop-hub/code-on-rails/pkg/patterns
+              examples: []
+        ordering: []
+        required:
+            - fmt
+            - strings
+            - github.com/loop-hub/code-on-rails/pkg/patterns
+        optional: []
+      discovered:
+        - path: internal/analyzer/analyzer.go
+          similarity_score: 0.9
+          weight: 1
+        - path: internal/analyzer/annotations.go
+          similarity_score: 0.9
+          weight: 1
+        - path: internal/detector/detector.go
+          similarity_score: 0.9
+          weight: 1
+        - path: internal/matcher/matcher.go
+          similarity_score: 0.9
+          weight: 1
+        - path: internal/reporter/reporter.go
+          similarity_score: 0.9
+          weight: 1
+      confidence: 0.75
+      seen_count: 5
+settings:
+    auto_approve_threshold: 95
+    learn_on_merge: true
+detection:
+    method: commit_message
+    commit_prefixes:
+        - '[ai'
+        - '[claude'
+        - '[copilot'
+        - '[cursor'
