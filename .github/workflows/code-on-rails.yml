@@ -23,14 +23,14 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Install Code on Rails
-        run: go install github.com/loop-hub/code-on-rails/cmd/cr@latest
+      - name: Build Code on Rails
+        run: go build -o cr ./cmd/cr
 
       - name: Run pattern check
         id: cr-check
         run: |
           set +e
-          OUTPUT=$(cr check 2>&1)
+          OUTPUT=$(./cr check 2>&1)
           EXIT_CODE=$?
           set -e
 

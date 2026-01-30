@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/loop-hub/code-on-rails/internal/analyzer"
 	"github.com/loop-hub/code-on-rails/internal/config"
@@ -34,6 +35,7 @@ change fits your architecture. Works locally and in CI/CD.`,
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(checkCmd())
 	rootCmd.AddCommand(learnCmd())
+	rootCmd.AddCommand(blessCmd())
 	rootCmd.AddCommand(versionCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -240,6 +242,80 @@ func learnCmd() *cobra.Command {
 	}
 
 	cmd.Flags().IntVarP(&days, "days", "d", 7, "number of days to look back")
+
+	return cmd
+}
+
+func blessCmd() *cobra.Command {
+	var reason string
+	var weight float64
+
+	cmd := &cobra.Command{
+		Use:   "bless <file>",
+		Short: "Mark a file as a blessed pattern example",
+		Long: `Bless a file to elevate it as a high-quality pattern reference.
+Blessed files have higher weight (1.5x by default) when matching patterns.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			filePath := args[0]
+
+			// Verify file exists
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				return fmt.Errorf("file not found: %s", filePath)
+			}
+
+			// Load configuration
+			cfg, err := config.Load("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w (run 'cr init' first)", err)
+			}
+
+			// Find which pattern this file belongs to
+			m := matcher.New(cfg.Patterns, cfg.Settings.AutoApproveThreshold)
+			match, err := m.MatchFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to analyze file: %w", err)
+			}
+
+			if match.Pattern == nil {
+				return fmt.Errorf("no matching pattern found for %s", filePath)
+			}
+
+			// Add to config_blessed for the matched pattern
+			blessed := patterns.BlessedExample{
+				Path:        filePath,
+				BlessedBy:   "config",
+				BlessedDate: time.Now(),
+				Reason:      reason,
+				Weight:      weight,
+			}
+
+			// Find and update the pattern
+			for i, p := range cfg.Patterns {
+				if p.ID == match.Pattern.ID {
+					cfg.Patterns[i].ConfigBlessed = append(cfg.Patterns[i].ConfigBlessed, blessed)
+					break
+				}
+			}
+
+			// Save configuration
+			if err := config.Save(cfg, ""); err != nil {
+				return fmt.Errorf("failed to save config: %w", err)
+			}
+
+			fmt.Printf("✓ Blessed %s\n", filePath)
+			fmt.Printf("  Pattern: %s\n", match.Pattern.Name)
+			fmt.Printf("  Weight: %.1fx\n", weight)
+			if reason != "" {
+				fmt.Printf("  Reason: %s\n", reason)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&reason, "reason", "r", "", "reason for blessing this file")
+	cmd.Flags().Float64VarP(&weight, "weight", "w", 1.5, "weight multiplier for pattern matching")
 
 	return cmd
 }
