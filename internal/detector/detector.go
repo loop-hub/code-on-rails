@@ -27,11 +27,18 @@ func (d *Detector) DetectFiles(gitRepo string) ([]string, error) {
 		return d.detectByGitNotes(gitRepo)
 	case "heuristic":
 		return d.detectByHeuristics(gitRepo)
+	case "branch":
+		return d.detectByBranch(gitRepo)
 	case "all":
 		// Combine all methods
 		files := make(map[string]bool)
 		if commitFiles, err := d.detectByCommitMessage(gitRepo); err == nil {
 			for _, f := range commitFiles {
+				files[f] = true
+			}
+		}
+		if branchFiles, err := d.detectByBranch(gitRepo); err == nil {
+			for _, f := range branchFiles {
 				files[f] = true
 			}
 		}
@@ -97,6 +104,113 @@ func (d *Detector) detectByCommitMessage(gitRepo string) ([]string, error) {
 	return result, nil
 }
 
+// detectByBranch detects AI-generated code by checking if the current branch
+// name contains AI tool prefixes (e.g., claude/, ai/, copilot/)
+func (d *Detector) detectByBranch(gitRepo string) ([]string, error) {
+	// Get current branch name
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = gitRepo
+	output, err := cmd.Output()
+	if err != nil {
+		return []string{}, nil
+	}
+
+	branchName := strings.TrimSpace(string(output))
+
+	// Check if branch name starts with any AI prefix
+	isAIBranch := false
+	for _, prefix := range d.Config.BranchPrefixes {
+		if strings.HasPrefix(branchName, prefix) || strings.Contains(branchName, "/"+prefix) {
+			isAIBranch = true
+			break
+		}
+	}
+
+	if !isAIBranch {
+		return []string{}, nil
+	}
+
+	// Find the base branch (main, master, or develop)
+	baseBranch := d.findBaseBranch(gitRepo)
+	if baseBranch == "" {
+		// Fall back to listing all .go files if no base branch found
+		return d.getAllGoFiles(gitRepo)
+	}
+
+	// Get files changed between base branch and current branch
+	return d.getChangedFiles(gitRepo, baseBranch, branchName)
+}
+
+// findBaseBranch tries to find the main/master/develop branch
+func (d *Detector) findBaseBranch(gitRepo string) string {
+	candidates := []string{"main", "master", "develop"}
+
+	for _, branch := range candidates {
+		// Check if branch exists locally
+		cmd := exec.Command("git", "rev-parse", "--verify", branch)
+		cmd.Dir = gitRepo
+		if err := cmd.Run(); err == nil {
+			return branch
+		}
+
+		// Check if branch exists on origin
+		cmd = exec.Command("git", "rev-parse", "--verify", "origin/"+branch)
+		cmd.Dir = gitRepo
+		if err := cmd.Run(); err == nil {
+			return "origin/" + branch
+		}
+	}
+
+	return ""
+}
+
+// getChangedFiles returns Go files changed between base and head
+func (d *Detector) getChangedFiles(gitRepo, base, head string) ([]string, error) {
+	// Find merge base to get accurate diff
+	mergeBaseCmd := exec.Command("git", "merge-base", base, head)
+	mergeBaseCmd.Dir = gitRepo
+	mergeBaseOutput, err := mergeBaseCmd.Output()
+	var compareRef string
+	if err != nil {
+		compareRef = base
+	} else {
+		compareRef = strings.TrimSpace(string(mergeBaseOutput))
+	}
+
+	cmd := exec.Command("git", "diff", "--name-only", compareRef, head)
+	cmd.Dir = gitRepo
+	output, err := cmd.Output()
+	if err != nil {
+		return []string{}, nil
+	}
+
+	files := []string{}
+	for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if file != "" && strings.HasSuffix(file, ".go") {
+			files = append(files, file)
+		}
+	}
+	return files, nil
+}
+
+// getAllGoFiles returns all Go files in the repository
+func (d *Detector) getAllGoFiles(gitRepo string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files", "*.go", "**/*.go")
+	cmd.Dir = gitRepo
+	output, err := cmd.Output()
+	if err != nil {
+		return []string{}, nil
+	}
+
+	files := []string{}
+	for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if file != "" {
+			files = append(files, file)
+		}
+	}
+	return files, nil
+}
+
 // detectByGitNotes finds files with AI notes
 func (d *Detector) detectByGitNotes(gitRepo string) ([]string, error) {
 	// This would check git notes for AI markers
@@ -132,26 +246,44 @@ func (d *Detector) IsAIGenerated(gitRepo, filePath string) (bool, error) {
 
 // GetAISource tries to determine which AI tool generated the code
 func (d *Detector) GetAISource(gitRepo, filePath string) (string, error) {
-	// Get the commit message for this file
+	// First check commit message
 	cmd := exec.Command("git", "log", "-1", "--pretty=format:%s", "--", filePath)
 	cmd.Dir = gitRepo
 	output, err := cmd.Output()
-	if err != nil {
-		return "unknown", err
+	if err == nil {
+		msg := strings.ToLower(string(output))
+		if strings.Contains(msg, "claude") {
+			return "claude", nil
+		}
+		if strings.Contains(msg, "copilot") {
+			return "copilot", nil
+		}
+		if strings.Contains(msg, "cursor") {
+			return "cursor", nil
+		}
+		if strings.Contains(msg, "[ai") {
+			return "ai", nil
+		}
 	}
 
-	msg := strings.ToLower(string(output))
-	if strings.Contains(msg, "claude") {
-		return "claude", nil
-	}
-	if strings.Contains(msg, "copilot") {
-		return "copilot", nil
-	}
-	if strings.Contains(msg, "cursor") {
-		return "cursor", nil
-	}
-	if strings.Contains(msg, "[ai") {
-		return "ai", nil
+	// Then check branch name
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd.Dir = gitRepo
+	branchOutput, err := branchCmd.Output()
+	if err == nil {
+		branch := strings.ToLower(strings.TrimSpace(string(branchOutput)))
+		if strings.Contains(branch, "claude") {
+			return "claude", nil
+		}
+		if strings.Contains(branch, "copilot") {
+			return "copilot", nil
+		}
+		if strings.Contains(branch, "cursor") {
+			return "cursor", nil
+		}
+		if strings.HasPrefix(branch, "ai/") || strings.HasPrefix(branch, "ai-") {
+			return "ai", nil
+		}
 	}
 
 	return "unknown", nil

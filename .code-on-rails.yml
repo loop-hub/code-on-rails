@@ -94,9 +94,18 @@ settings:
     auto_approve_threshold: 95
     learn_on_merge: true
 detection:
-    method: commit_message
+    method: all
     commit_prefixes:
         - '[ai'
         - '[claude'
         - '[copilot'
         - '[cursor'
+    branch_prefixes:
+        - 'claude/'
+        - 'ai/'
+        - 'copilot/'
+        - 'cursor/'
+        - 'claude-'
+        - 'ai-'
+        - 'copilot-'
+        - 'cursor-'

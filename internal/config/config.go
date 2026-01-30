@@ -28,8 +28,9 @@ type Settings struct {
 
 // DetectionConfig for AI code detection
 type DetectionConfig struct {
-	Method         string   `yaml:"method"` // commit_message, git_notes, heuristic, all
+	Method         string   `yaml:"method"` // commit_message, git_notes, heuristic, branch, all
 	CommitPrefixes []string `yaml:"commit_prefixes"`
+	BranchPrefixes []string `yaml:"branch_prefixes"`
 }
 
 // Load reads configuration from file
@@ -60,6 +61,9 @@ func Load(path string) (*Config, error) {
 	}
 	if len(cfg.Detection.CommitPrefixes) == 0 {
 		cfg.Detection.CommitPrefixes = []string{"[ai", "[claude", "[copilot", "[cursor"}
+	}
+	if len(cfg.Detection.BranchPrefixes) == 0 {
+		cfg.Detection.BranchPrefixes = []string{"claude/", "ai/", "copilot/", "cursor/", "claude-", "ai-", "copilot-", "cursor-"}
 	}
 
 	return &cfg, nil
@@ -104,8 +108,9 @@ func NewDefault(language string) *Config {
 			LearnOnMerge:         true,
 		},
 		Detection: DetectionConfig{
-			Method:         "commit_message",
+			Method:         "all",
 			CommitPrefixes: []string{"[ai", "[claude", "[copilot", "[cursor"},
+			BranchPrefixes: []string{"claude/", "ai/", "copilot/", "cursor/", "claude-", "ai-", "copilot-", "cursor-"},
 		},
 	}
 }
