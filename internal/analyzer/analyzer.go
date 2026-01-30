@@ -25,9 +25,18 @@ func New(language string) *Analyzer {
 
 // ExtractPatterns analyzes a codebase and extracts common patterns
 func (a *Analyzer) ExtractPatterns(rootPath string) ([]patterns.Pattern, error) {
-	if a.Language != "go" {
+	switch a.Language {
+	case "go":
+		return a.extractGoPatterns(rootPath)
+	case "typescript", "ts", "javascript", "js", "react":
+		return a.extractTypeScriptPatterns(rootPath)
+	default:
 		return nil, fmt.Errorf("unsupported language: %s", a.Language)
 	}
+}
+
+// extractGoPatterns extracts patterns from Go codebases
+func (a *Analyzer) extractGoPatterns(rootPath string) ([]patterns.Pattern, error) {
 
 	// Step 1: Find annotated golden examples
 	parser := NewAnnotationParser()
@@ -119,6 +128,287 @@ func (a *Analyzer) ExtractPatterns(rootPath string) ([]patterns.Pattern, error) 
 	}
 
 	return extractedPatterns, nil
+}
+
+// extractTypeScriptPatterns extracts patterns from TypeScript/JavaScript codebases
+func (a *Analyzer) extractTypeScriptPatterns(rootPath string) ([]patterns.Pattern, error) {
+	// Find all TypeScript/JavaScript files
+	files, err := findTypeScriptFiles(rootPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse all files
+	fileInfos := make([]patterns.FileInfo, 0, len(files))
+	for _, file := range files {
+		info, err := parseTypeScriptFile(file)
+		if err != nil {
+			continue
+		}
+		fileInfos = append(fileInfos, *info)
+	}
+
+	// Group files by pattern type
+	groups := groupTypeScriptByPattern(fileInfos)
+
+	// Extract patterns from groups
+	extractedPatterns := []patterns.Pattern{}
+	for patternType, group := range groups {
+		if len(group) < 2 {
+			continue // Need at least 2 examples
+		}
+
+		pattern := extractTypeScriptPattern(patternType, group)
+		pattern.Discovered = make([]patterns.Example, 0, len(group))
+		for _, file := range group {
+			pattern.Discovered = append(pattern.Discovered, patterns.Example{
+				Path:            file.Path,
+				SimilarityScore: 0.9,
+				Weight:          1.0,
+			})
+		}
+
+		extractedPatterns = append(extractedPatterns, pattern)
+	}
+
+	return extractedPatterns, nil
+}
+
+// findTypeScriptFiles recursively finds all TypeScript/JavaScript files
+func findTypeScriptFiles(root string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			// Skip node_modules and common non-source directories
+			if info.Name() == "node_modules" || info.Name() == "dist" ||
+				info.Name() == "build" || info.Name() == ".next" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Include TypeScript and JavaScript files
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".ts" || ext == ".tsx" || ext == ".js" || ext == ".jsx" {
+			// Skip test files
+			name := strings.ToLower(filepath.Base(path))
+			if !strings.Contains(name, ".test.") && !strings.Contains(name, ".spec.") &&
+				!strings.Contains(path, "__tests__") && !strings.Contains(path, "__mocks__") {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	return files, err
+}
+
+// parseTypeScriptFile parses a TypeScript/JavaScript file using text analysis
+func parseTypeScriptFile(filePath string) (*patterns.FileInfo, error) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	code := string(content)
+	lines := strings.Split(code, "\n")
+
+	info := &patterns.FileInfo{
+		Path:      filePath,
+		Package:   filepath.Base(filepath.Dir(filePath)),
+		Imports:   extractTypeScriptImports(code),
+		Functions: extractTypeScriptFunctions(lines),
+		Types:     extractTypeScriptTypes(lines),
+	}
+
+	return info, nil
+}
+
+// extractTypeScriptImports extracts import statements from TypeScript/JavaScript
+func extractTypeScriptImports(code string) []string {
+	imports := []string{}
+	importRegex := regexp.MustCompile(`import\s+(?:{[^}]+}|[\w\s,*]+)\s+from\s+['"]([^'"]+)['"]`)
+	matches := importRegex.FindAllStringSubmatch(code, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			imports = append(imports, match[1])
+		}
+	}
+	return imports
+}
+
+// extractTypeScriptFunctions extracts function declarations
+func extractTypeScriptFunctions(lines []string) []patterns.FunctionInfo {
+	functions := []patterns.FunctionInfo{}
+
+	// Patterns for function declarations
+	funcPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?:export\s+)?(?:async\s+)?function\s+(\w+)`),
+		regexp.MustCompile(`(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(`),
+		regexp.MustCompile(`(?:export\s+)?const\s+(\w+)\s*:\s*\w+\s*=\s*(?:async\s+)?\(`),
+		regexp.MustCompile(`(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*=>`),
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for _, pattern := range funcPatterns {
+			if matches := pattern.FindStringSubmatch(trimmed); len(matches) > 1 {
+				functions = append(functions, patterns.FunctionInfo{
+					Name: matches[1],
+				})
+				break
+			}
+		}
+	}
+
+	return functions
+}
+
+// extractTypeScriptTypes extracts type and interface declarations
+func extractTypeScriptTypes(lines []string) []patterns.TypeInfo {
+	types := []patterns.TypeInfo{}
+
+	typePatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?:export\s+)?interface\s+(\w+)`),
+		regexp.MustCompile(`(?:export\s+)?type\s+(\w+)\s*=`),
+		regexp.MustCompile(`(?:export\s+)?class\s+(\w+)`),
+		regexp.MustCompile(`(?:export\s+)?enum\s+(\w+)`),
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for i, pattern := range typePatterns {
+			if matches := pattern.FindStringSubmatch(trimmed); len(matches) > 1 {
+				kind := []string{"interface", "type", "class", "enum"}[i]
+				types = append(types, patterns.TypeInfo{
+					Name: matches[1],
+					Kind: kind,
+				})
+				break
+			}
+		}
+	}
+
+	return types
+}
+
+// groupTypeScriptByPattern groups files by their pattern type
+func groupTypeScriptByPattern(files []patterns.FileInfo) map[patterns.PatternType][]patterns.FileInfo {
+	groups := make(map[patterns.PatternType][]patterns.FileInfo)
+
+	for _, file := range files {
+		patternType := inferTypeScriptPatternType(file)
+		groups[patternType] = append(groups[patternType], file)
+	}
+
+	return groups
+}
+
+// inferTypeScriptPatternType determines the pattern type for a TypeScript file
+func inferTypeScriptPatternType(file patterns.FileInfo) patterns.PatternType {
+	fileName := strings.ToLower(filepath.Base(file.Path))
+	filePath := strings.ToLower(file.Path)
+
+	// Check file name patterns
+	if strings.HasSuffix(fileName, ".component.tsx") || strings.HasSuffix(fileName, ".component.jsx") {
+		return patterns.PatternComponent
+	}
+	if strings.HasPrefix(fileName, "use") && (strings.HasSuffix(fileName, ".ts") || strings.HasSuffix(fileName, ".tsx")) {
+		return patterns.PatternHook
+	}
+	if strings.Contains(fileName, ".hook.") || strings.Contains(fileName, "hooks") {
+		return patterns.PatternHook
+	}
+	if strings.Contains(fileName, ".context.") || strings.Contains(filePath, "/context/") {
+		return patterns.PatternContext
+	}
+	if strings.Contains(filePath, "/pages/") || strings.Contains(filePath, "/app/") {
+		return patterns.PatternPage
+	}
+	if strings.Contains(filePath, "/api/") || strings.Contains(fileName, ".api.") {
+		return patterns.PatternAPI
+	}
+	if strings.Contains(fileName, ".store.") || strings.Contains(filePath, "/store/") ||
+		strings.Contains(filePath, "/redux/") || strings.Contains(filePath, "/zustand/") {
+		return patterns.PatternStore
+	}
+	if strings.HasSuffix(fileName, ".types.ts") || strings.HasSuffix(fileName, ".d.ts") ||
+		strings.Contains(filePath, "/types/") {
+		return patterns.PatternTypeDefinition
+	}
+	if strings.Contains(fileName, ".stories.") || strings.Contains(filePath, "/stories/") {
+		return patterns.PatternStorybook
+	}
+	if strings.Contains(fileName, ".styled.") || strings.Contains(fileName, ".styles.") {
+		return patterns.PatternStyled
+	}
+	if strings.Contains(fileName, ".service.") || strings.Contains(filePath, "/services/") {
+		return patterns.PatternService
+	}
+
+	// Check for React components by content
+	for _, imp := range file.Imports {
+		if imp == "react" || strings.HasPrefix(imp, "react/") {
+			// Check for component patterns in functions
+			for _, fn := range file.Functions {
+				if strings.HasPrefix(fn.Name, "use") {
+					return patterns.PatternHook
+				}
+			}
+			return patterns.PatternComponent
+		}
+	}
+
+	return patterns.PatternUtil
+}
+
+// extractTypeScriptPattern creates a pattern from grouped TypeScript files
+func extractTypeScriptPattern(patternType patterns.PatternType, files []patterns.FileInfo) patterns.Pattern {
+	// Collect common imports
+	importCounts := make(map[string]int)
+	for _, file := range files {
+		for _, imp := range file.Imports {
+			importCounts[imp]++
+		}
+	}
+
+	// Find common imports (present in >50% of files)
+	threshold := len(files) / 2
+	if threshold < 1 {
+		threshold = 1
+	}
+
+	commonImports := []string{}
+	for imp, count := range importCounts {
+		if count >= threshold {
+			commonImports = append(commonImports, imp)
+		}
+	}
+
+	// Build pattern structure
+	elements := make([]patterns.StructureElement, 0, len(commonImports))
+	for _, imp := range commonImports {
+		elements = append(elements, patterns.StructureElement{
+			Name:    imp,
+			Type:    patterns.ElementImport,
+			Pattern: regexp.QuoteMeta(imp),
+		})
+	}
+
+	return patterns.Pattern{
+		ID:       string(patternType) + "_pattern",
+		Name:     string(patternType),
+		Type:     patternType,
+		Version:  "1.0",
+		Structure: patterns.CodeStructure{
+			Elements: elements,
+			Required: commonImports,
+		},
+		Confidence: 0.8,
+		SeenCount:  len(files),
+	}
 }
 
 // findGoFiles recursively finds all .go files

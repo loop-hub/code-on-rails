@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/loop-hub/code-on-rails/internal/analyzer"
@@ -18,6 +21,9 @@ var (
 	verbose   bool
 	aiModel   string
 	threshold float64
+	format    string
+	repoURL   string
+	commitSHA string
 )
 
 func main() {
@@ -92,7 +98,7 @@ func initCmd() *cobra.Command {
 
 			// Report results
 			rep := reporter.New(verbose)
-			rep.ReportInit(patterns, totalFiles)
+			rep.ReportInit(patterns, totalFiles, language)
 
 			return nil
 		},
@@ -120,19 +126,31 @@ func checkCmd() *cobra.Command {
 				cfg.Settings.AutoApproveThreshold = threshold
 			}
 
+			// Detect language if not configured
+			lang := cfg.Language
+			if lang == "" {
+				lang = detectLanguage(".")
+			}
+
 			// Get files to check
 			files := args
 			if len(files) == 0 {
 				// Detect AI-generated files
-				det := detector.New(&cfg.Detection)
+				det := detector.NewWithLanguage(&cfg.Detection, lang)
 				files, err = det.DetectFiles(".")
 				if err != nil {
 					return fmt.Errorf("failed to detect AI files: %w", err)
 				}
 
 				if len(files) == 0 {
-					fmt.Println("No AI-generated files found.")
-					fmt.Println("Hint: Tag commits with [ai], [claude], [copilot], etc.")
+					if format == "json" {
+						fmt.Println(`{"summary":{"total_files":0},"auto_approved":[],"needs_review":[]}`)
+					} else if format == "github" {
+						fmt.Println("## 🤖 Code on Rails\n\n✨ No AI-generated code detected in this PR.")
+					} else {
+						fmt.Println("No AI-generated files found.")
+						fmt.Printf("Detected language: %s\n", lang)
+					}
 					return nil
 				}
 			}
@@ -153,16 +171,37 @@ func checkCmd() *cobra.Command {
 				matches = append(matches, *match)
 			}
 
-			// Report results
+			// Report results based on format
 			rep := reporter.New(verbose)
-			rep.Report(matches)
 
-			// Exit with error if any files failed
-			for _, match := range matches {
-				if !match.AutoApprove {
-					for _, dev := range match.Deviations {
-						if dev.Severity == patterns.SeverityError {
-							os.Exit(1)
+			// Get GitHub context from environment if not specified
+			if repoURL == "" {
+				repoURL = os.Getenv("GITHUB_REPOSITORY")
+				if repoURL != "" {
+					repoURL = "https://github.com/" + repoURL
+				}
+			}
+			if commitSHA == "" {
+				commitSHA = os.Getenv("GITHUB_SHA")
+			}
+
+			switch format {
+			case "json":
+				fmt.Println(rep.ReportJSON(matches, lang))
+			case "github":
+				fmt.Println(rep.FormatForGitHub(matches, repoURL, commitSHA))
+			default:
+				rep.Report(matches)
+			}
+
+			// Exit with error if any files failed (only in default mode)
+			if format == "" {
+				for _, match := range matches {
+					if !match.AutoApprove {
+						for _, dev := range match.Deviations {
+							if dev.Severity == patterns.SeverityError {
+								os.Exit(1)
+							}
 						}
 					}
 				}
@@ -173,6 +212,9 @@ func checkCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&aiModel, "ai-model", "a", "", "filter by AI model (claude, copilot, cursor, any)")
+	cmd.Flags().StringVarP(&format, "format", "f", "", "output format: json, github, or default (text)")
+	cmd.Flags().StringVar(&repoURL, "repo-url", "", "GitHub repository URL (for github format links)")
+	cmd.Flags().StringVar(&commitSHA, "sha", "", "Git commit SHA (for github format links)")
 	cmd.Flags().Float64VarP(&threshold, "threshold", "t", 0, "auto-approve threshold (0-100)")
 
 	return cmd
@@ -333,9 +375,80 @@ func versionCmd() *cobra.Command {
 // Helper functions
 
 func detectLanguage(path string) string {
-	// Simple language detection based on files
-	// In real implementation, would check file extensions
-	return "go"
+	// Detect language based on project files
+	if path == "" {
+		path = "."
+	}
+
+	// Check for Go
+	if fileExists(path + "/go.mod") {
+		return "go"
+	}
+
+	// Check for TypeScript/React
+	if fileExists(path + "/tsconfig.json") {
+		// Check if it's a React project
+		if fileExists(path+"/package.json") && fileContains(path+"/package.json", "react") {
+			return "react"
+		}
+		return "typescript"
+	}
+
+	// Check for JavaScript/React
+	if fileExists(path + "/package.json") {
+		if fileContains(path+"/package.json", "react") {
+			return "react"
+		}
+		return "javascript"
+	}
+
+	// Default to detecting based on file prevalence
+	goCount := countFilesWithExtension(path, ".go")
+	tsCount := countFilesWithExtension(path, ".ts") + countFilesWithExtension(path, ".tsx")
+	jsCount := countFilesWithExtension(path, ".js") + countFilesWithExtension(path, ".jsx")
+
+	if goCount >= tsCount && goCount >= jsCount && goCount > 0 {
+		return "go"
+	}
+	if tsCount >= jsCount && tsCount > 0 {
+		return "typescript"
+	}
+	if jsCount > 0 {
+		return "javascript"
+	}
+
+	return "go" // Default fallback
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func fileContains(path string, substr string) bool {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(content), substr)
+}
+
+func countFilesWithExtension(dir string, ext string) int {
+	count := 0
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ext) {
+			count++
+		}
+		// Limit depth to avoid scanning too deep
+		if d.IsDir() && strings.Count(path, string(os.PathSeparator)) > 5 {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return count
 }
 
 func mergePatterns(existing, new []patterns.Pattern) int {

@@ -63,12 +63,25 @@ type AntiPattern struct {
 type PatternType string
 
 const (
-	PatternHTTPHandler  PatternType = "http_handler"
-	PatternService      PatternType = "service"
-	PatternRepository   PatternType = "repository"
-	PatternMiddleware   PatternType = "middleware"
-	PatternModel        PatternType = "model"
-	PatternUtil         PatternType = "util"
+	// Go patterns
+	PatternHTTPHandler PatternType = "http_handler"
+	PatternService     PatternType = "service"
+	PatternRepository  PatternType = "repository"
+	PatternMiddleware  PatternType = "middleware"
+	PatternModel       PatternType = "model"
+	PatternUtil        PatternType = "util"
+
+	// TypeScript/React patterns
+	PatternComponent     PatternType = "component"      // React functional/class components
+	PatternHook          PatternType = "hook"           // Custom React hooks
+	PatternContext       PatternType = "context"        // React context providers
+	PatternPage          PatternType = "page"           // Next.js/React Router pages
+	PatternAPI           PatternType = "api"            // API route handlers (Next.js, Express)
+	PatternStore         PatternType = "store"          // State management (Redux, Zustand)
+	PatternTypeDefinition PatternType = "types"          // TypeScript type definitions
+	PatternTest          PatternType = "test"           // Test files
+	PatternStorybook     PatternType = "storybook"      // Storybook stories
+	PatternStyled        PatternType = "styled"         // Styled components
 )
 
 // DetectionRule defines how to detect this pattern
@@ -99,13 +112,26 @@ type StructureElement struct {
 type ElementType string
 
 const (
-	ElementImport       ElementType = "import"
-	ElementTypeDecl     ElementType = "type"
-	ElementFunction     ElementType = "function"
-	ElementMethod       ElementType = "method"
-	ElementErrorHandle  ElementType = "error_handling"
-	ElementValidation   ElementType = "validation"
-	ElementTransaction  ElementType = "transaction"
+	// Common elements
+	ElementImport      ElementType = "import"
+	ElementTypeDecl    ElementType = "type"
+	ElementFunction    ElementType = "function"
+	ElementMethod      ElementType = "method"
+	ElementErrorHandle ElementType = "error_handling"
+	ElementValidation  ElementType = "validation"
+	ElementTransaction ElementType = "transaction"
+
+	// TypeScript/React elements
+	ElementInterface    ElementType = "interface"     // TypeScript interface
+	ElementTypeAlias    ElementType = "type_alias"    // TypeScript type alias
+	ElementEnum         ElementType = "enum"          // TypeScript enum
+	ElementJSXElement   ElementType = "jsx_element"   // JSX/TSX element
+	ElementHookCall     ElementType = "hook_call"     // React hook usage (useState, useEffect, etc.)
+	ElementProp         ElementType = "prop"          // Component prop
+	ElementState        ElementType = "state"         // Component state
+	ElementEffect       ElementType = "effect"        // useEffect/side effects
+	ElementExport       ElementType = "export"        // Export statement
+	ElementDefaultExport ElementType = "default_export" // Default export
 )
 
 // PatternMatch represents how well code matches a pattern
