@@ -2,6 +2,7 @@ package detector
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -107,15 +108,19 @@ func (d *Detector) detectByCommitMessage(gitRepo string) ([]string, error) {
 // detectByBranch detects AI-generated code by checking if the current branch
 // name contains AI tool prefixes (e.g., claude/, ai/, copilot/)
 func (d *Detector) detectByBranch(gitRepo string) ([]string, error) {
-	// Get current branch name
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = gitRepo
-	output, err := cmd.Output()
-	if err != nil {
-		return []string{}, nil
-	}
+	// Get current branch name - first check GitHub Actions env var (for PRs)
+	branchName := os.Getenv("GITHUB_HEAD_REF")
 
-	branchName := strings.TrimSpace(string(output))
+	// Fall back to git command if not in GitHub Actions PR context
+	if branchName == "" {
+		cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+		cmd.Dir = gitRepo
+		output, err := cmd.Output()
+		if err != nil {
+			return []string{}, nil
+		}
+		branchName = strings.TrimSpace(string(output))
+	}
 
 	// Check if branch name starts with any AI prefix
 	isAIBranch := false
@@ -130,15 +135,18 @@ func (d *Detector) detectByBranch(gitRepo string) ([]string, error) {
 		return []string{}, nil
 	}
 
-	// Find the base branch (main, master, or develop)
-	baseBranch := d.findBaseBranch(gitRepo)
+	// Find the base branch - first check GitHub Actions env var (for PRs)
+	baseBranch := os.Getenv("GITHUB_BASE_REF")
+	if baseBranch == "" {
+		baseBranch = d.findBaseBranch(gitRepo)
+	}
 	if baseBranch == "" {
 		// Fall back to listing all .go files if no base branch found
 		return d.getAllGoFiles(gitRepo)
 	}
 
 	// Get files changed between base branch and current branch
-	return d.getChangedFiles(gitRepo, baseBranch, branchName)
+	return d.getChangedFiles(gitRepo, baseBranch, "HEAD")
 }
 
 // findBaseBranch tries to find the main/master/develop branch
