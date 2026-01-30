@@ -57,7 +57,7 @@ func Load(path string) (*Config, error) {
 		cfg.AISource = "any"
 	}
 	if cfg.Detection.Method == "" {
-		cfg.Detection.Method = "commit_message"
+		cfg.Detection.Method = "heuristic"
 	}
 	if len(cfg.Detection.CommitPrefixes) == 0 {
 		cfg.Detection.CommitPrefixes = []string{"[ai", "[claude", "[copilot", "[cursor"}

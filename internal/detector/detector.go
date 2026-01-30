@@ -226,15 +226,195 @@ func (d *Detector) detectByGitNotes(gitRepo string) ([]string, error) {
 	return []string{}, nil
 }
 
-// detectByHeuristics uses AI code characteristics
+// detectByHeuristics detects AI-generated code using multiple strategies:
+// 1. In CI/PR context: analyzes all changed files in the PR (no scoring threshold)
+// 2. Locally: analyzes recently changed files for AI-typical patterns
 func (d *Detector) detectByHeuristics(gitRepo string) ([]string, error) {
-	// This would analyze code for AI patterns:
-	// - Comprehensive comments
-	// - Complete error handling
-	// - Consistent formatting
-	// - No TODOs
-	// For PoC, return empty
-	return []string{}, nil
+	var candidates []string
+	inCI := os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("CI") == "true"
+
+	// Strategy 1: Get files changed in PR context (CI environment)
+	if inCI {
+		prFiles, err := d.getPRChangedFiles(gitRepo)
+		if err == nil && len(prFiles) > 0 {
+			candidates = prFiles
+		}
+	}
+
+	// Strategy 2: Get recently changed files (local development)
+	if len(candidates) == 0 {
+		recentFiles, err := d.getRecentlyChangedFiles(gitRepo)
+		if err == nil {
+			candidates = recentFiles
+		}
+	}
+
+	// Filter to Go files
+	aiFiles := []string{}
+	for _, file := range candidates {
+		if !strings.HasSuffix(file, ".go") {
+			continue
+		}
+
+		// In CI: include all changed Go files (the point is to validate PR changes)
+		// Locally: use scoring threshold to avoid noise
+		if inCI {
+			aiFiles = append(aiFiles, file)
+		} else {
+			score := d.scoreFileForAI(gitRepo, file)
+			// Lower threshold (30) - we want to catch likely AI code
+			if score >= 30 {
+				aiFiles = append(aiFiles, file)
+			}
+		}
+	}
+
+	return aiFiles, nil
+}
+
+// getPRChangedFiles gets files changed in the current PR
+func (d *Detector) getPRChangedFiles(gitRepo string) ([]string, error) {
+	// Get base ref from GitHub Actions
+	baseRef := os.Getenv("GITHUB_BASE_REF")
+	if baseRef == "" {
+		return []string{}, nil
+	}
+
+	// Fetch the base branch to ensure we have it
+	fetchCmd := exec.Command("git", "fetch", "origin", baseRef, "--depth=1")
+	fetchCmd.Dir = gitRepo
+	fetchCmd.Run() // Ignore errors, branch might already exist
+
+	// Get changed files compared to base
+	cmd := exec.Command("git", "diff", "--name-only", "origin/"+baseRef+"...HEAD")
+	cmd.Dir = gitRepo
+	output, err := cmd.Output()
+	if err != nil {
+		// Fallback: try without the three-dot syntax
+		cmd = exec.Command("git", "diff", "--name-only", "origin/"+baseRef, "HEAD")
+		cmd.Dir = gitRepo
+		output, err = cmd.Output()
+		if err != nil {
+			return []string{}, err
+		}
+	}
+
+	files := []string{}
+	for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if file != "" {
+			files = append(files, file)
+		}
+	}
+	return files, nil
+}
+
+// getRecentlyChangedFiles gets files changed in recent commits
+func (d *Detector) getRecentlyChangedFiles(gitRepo string) ([]string, error) {
+	// Get files from last 10 commits
+	cmd := exec.Command("git", "diff", "--name-only", "HEAD~10", "HEAD")
+	cmd.Dir = gitRepo
+	output, err := cmd.Output()
+	if err != nil {
+		// Fallback for repos with fewer commits
+		cmd = exec.Command("git", "log", "--name-only", "--pretty=format:", "-n", "10")
+		cmd.Dir = gitRepo
+		output, err = cmd.Output()
+		if err != nil {
+			return []string{}, err
+		}
+	}
+
+	seen := make(map[string]bool)
+	files := []string{}
+	for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if file != "" && !seen[file] {
+			seen[file] = true
+			files = append(files, file)
+		}
+	}
+	return files, nil
+}
+
+// scoreFileForAI analyzes a file and returns an AI-likelihood score (0-100)
+func (d *Detector) scoreFileForAI(gitRepo, filePath string) int {
+	fullPath := gitRepo + "/" + filePath
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return 0
+	}
+
+	code := string(content)
+	lines := strings.Split(code, "\n")
+	score := 0
+
+	// Heuristic 1: Comment density (AI writes more comments)
+	commentLines := 0
+	codeLines := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") {
+			commentLines++
+		} else if trimmed != "" && !strings.HasPrefix(trimmed, "package") && !strings.HasPrefix(trimmed, "import") {
+			codeLines++
+		}
+	}
+	if codeLines > 0 {
+		commentRatio := float64(commentLines) / float64(codeLines)
+		if commentRatio > 0.15 {
+			score += 20 // Good comment coverage
+		}
+		if commentRatio > 0.25 {
+			score += 10 // Excellent comment coverage
+		}
+	}
+
+	// Heuristic 2: Error handling completeness (AI rarely forgets error checks)
+	errReturns := strings.Count(code, "err != nil")
+	funcCount := strings.Count(code, "func ")
+	if funcCount > 0 && errReturns >= funcCount {
+		score += 20 // Comprehensive error handling
+	}
+
+	// Heuristic 3: No TODOs or FIXMEs (AI writes complete code)
+	hasTodo := strings.Contains(strings.ToUpper(code), "TODO") || strings.Contains(strings.ToUpper(code), "FIXME")
+	if !hasTodo {
+		score += 15
+	}
+
+	// Heuristic 4: Consistent struct documentation (AI documents everything)
+	typeCount := strings.Count(code, "type ")
+	typeComments := 0
+	for i, line := range lines {
+		if strings.Contains(line, "type ") && strings.Contains(line, "struct") {
+			if i > 0 && strings.HasPrefix(strings.TrimSpace(lines[i-1]), "//") {
+				typeComments++
+			}
+		}
+	}
+	if typeCount > 0 && typeComments == typeCount {
+		score += 15
+	}
+
+	// Heuristic 5: Function documentation (AI documents functions)
+	funcComments := 0
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "func ") {
+			if i > 0 && strings.HasPrefix(strings.TrimSpace(lines[i-1]), "//") {
+				funcComments++
+			}
+		}
+	}
+	if funcCount > 0 {
+		docRatio := float64(funcComments) / float64(funcCount)
+		if docRatio > 0.5 {
+			score += 10
+		}
+		if docRatio > 0.8 {
+			score += 10
+		}
+	}
+
+	return score
 }
 
 // IsAIGenerated checks if a specific file was AI-generated
