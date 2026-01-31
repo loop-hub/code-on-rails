@@ -42,6 +42,7 @@ change fits your architecture. Works locally and in CI/CD.`,
 	rootCmd.AddCommand(checkCmd())
 	rootCmd.AddCommand(learnCmd())
 	rootCmd.AddCommand(blessCmd())
+	rootCmd.AddCommand(feedbackCmd())
 	rootCmd.AddCommand(versionCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -222,16 +223,34 @@ func checkCmd() *cobra.Command {
 
 func learnCmd() *cobra.Command {
 	var days int
+	var updateSkills bool
+	var skillsFile string
 
 	cmd := &cobra.Command{
 		Use:   "learn",
 		Short: "Update patterns from recently merged code",
-		Long:  `Analyze recently merged code and update pattern definitions.`,
+		Long: `Analyze recently merged code and update pattern definitions.
+
+The --update-skills flag generates a portable skills file that can be:
+  - Shared with team members using different AI assistants
+  - Stored in a central skills repository for enterprise use
+  - Used as input for AI assistants to understand codebase conventions
+
+Examples:
+  cr learn                              # Update local patterns
+  cr learn --update-skills              # Generate .code-on-rails-skills.json
+  cr learn --update-skills -s custom.json  # Custom output file`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load configuration
 			cfg, err := config.Load("")
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Detect language if not configured
+			lang := cfg.Language
+			if lang == "" {
+				lang = detectLanguage(".")
 			}
 
 			fmt.Printf("Analyzing merged code from last %d days...\n", days)
@@ -245,6 +264,11 @@ func learnCmd() *cobra.Command {
 
 			if len(files) == 0 {
 				fmt.Println("No recently merged AI-generated files found.")
+
+				// Still generate skills file if requested
+				if updateSkills {
+					return generateSkillsFile(cfg.Patterns, lang, skillsFile)
+				}
 				return nil
 			}
 
@@ -279,13 +303,38 @@ func learnCmd() *cobra.Command {
 			rep := reporter.New(verbose)
 			rep.ReportLearn([]patterns.Pattern{}, updated)
 
+			// Generate skills file if requested
+			if updateSkills {
+				return generateSkillsFile(cfg.Patterns, lang, skillsFile)
+			}
+
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVarP(&days, "days", "d", 7, "number of days to look back")
+	cmd.Flags().BoolVar(&updateSkills, "update-skills", false, "generate portable skills file")
+	cmd.Flags().StringVarP(&skillsFile, "skills-file", "s", ".code-on-rails-skills.json", "skills file output path")
 
 	return cmd
+}
+
+func generateSkillsFile(patternList []patterns.Pattern, language, outputPath string) error {
+	rep := reporter.New(verbose)
+	skills := rep.FormatSkillFile(patternList, language)
+
+	if err := os.WriteFile(outputPath, []byte(skills), 0644); err != nil {
+		return fmt.Errorf("failed to write skills file: %w", err)
+	}
+
+	fmt.Printf("✓ Generated skills file: %s\n", outputPath)
+	fmt.Printf("  Contains %d pattern skill(s)\n", len(patternList))
+	fmt.Println("\nUsage:")
+	fmt.Println("  - Share with team members for consistent AI-generated code")
+	fmt.Println("  - Add to enterprise skills repository")
+	fmt.Println("  - Include in AI assistant context for pattern awareness")
+
+	return nil
 }
 
 func blessCmd() *cobra.Command {
@@ -358,6 +407,115 @@ Blessed files have higher weight (1.5x by default) when matching patterns.`,
 
 	cmd.Flags().StringVarP(&reason, "reason", "r", "", "reason for blessing this file")
 	cmd.Flags().Float64VarP(&weight, "weight", "w", 1.5, "weight multiplier for pattern matching")
+
+	return cmd
+}
+
+func feedbackCmd() *cobra.Command {
+	var outputFile string
+
+	cmd := &cobra.Command{
+		Use:   "feedback [files...]",
+		Short: "Generate AI-readable feedback for fixing code issues",
+		Long: `Analyze code and generate structured feedback optimized for AI assistants.
+
+The output provides clear instructions, pattern references, and specific fixes
+that Claude or other AI assistants can use to correct code issues.
+
+Use Cases:
+  - Single developer: Run after 'cr check' to get AI-ready fix instructions
+  - CI/CD pipeline: Generate feedback artifact for AI to consume
+  - Team workflow: Share feedback files for AI-assisted code review
+
+Examples:
+  cr feedback                     # Analyze all AI-generated code
+  cr feedback -o feedback.json    # Save feedback to file
+  cr feedback src/components/     # Analyze specific directory`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load configuration
+			cfg, err := config.Load("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w (run 'cr init' first)", err)
+			}
+
+			// Detect language if not configured
+			lang := cfg.Language
+			if lang == "" {
+				lang = detectLanguage(".")
+			}
+
+			// Get files to check
+			files := args
+			if len(files) == 0 {
+				// Detect AI-generated files
+				det := detector.NewWithLanguage(&cfg.Detection, lang)
+				files, err = det.DetectFiles(".")
+				if err != nil {
+					return fmt.Errorf("failed to detect AI files: %w", err)
+				}
+
+				if len(files) == 0 {
+					// Output empty feedback
+					emptyFeedback := `{
+  "summary": {"total_files": 0, "needs_fixes": 0, "auto_approved": 0},
+  "files_to_fix": [],
+  "approved_files": [],
+  "pattern_examples": [],
+  "instructions": "No AI-generated code detected. No changes required."
+}`
+					if outputFile != "" {
+						return os.WriteFile(outputFile, []byte(emptyFeedback), 0644)
+					}
+					fmt.Println(emptyFeedback)
+					return nil
+				}
+			}
+
+			// Create matcher
+			m := matcher.New(cfg.Patterns, cfg.Settings.AutoApproveThreshold)
+
+			// Match each file
+			matches := []patterns.PatternMatch{}
+			for _, file := range files {
+				match, err := m.MatchFile(file)
+				if err != nil {
+					if verbose {
+						fmt.Fprintf(os.Stderr, "Warning: failed to match %s: %v\n", file, err)
+					}
+					continue
+				}
+				matches = append(matches, *match)
+			}
+
+			// Generate AI feedback
+			rep := reporter.New(verbose)
+			feedback := rep.FormatAIFeedback(matches, lang, cfg.Patterns)
+
+			// Output to file or stdout
+			if outputFile != "" {
+				if err := os.WriteFile(outputFile, []byte(feedback), 0644); err != nil {
+					return fmt.Errorf("failed to write feedback file: %w", err)
+				}
+				fmt.Printf("Feedback written to %s\n", outputFile)
+
+				// Also print summary to stderr for visibility
+				needsFixes := 0
+				for _, match := range matches {
+					if !match.AutoApprove {
+						needsFixes++
+					}
+				}
+				fmt.Fprintf(os.Stderr, "Summary: %d files analyzed, %d need fixes, %d auto-approved\n",
+					len(matches), needsFixes, len(matches)-needsFixes)
+			} else {
+				fmt.Println(feedback)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file for feedback (default: stdout)")
 
 	return cmd
 }

@@ -535,3 +535,303 @@ func formatGitHubLink(repoURL, sha, filePath string, lineNumber int) string {
 	}
 	return fmt.Sprintf("[`%s`](%s/blob/%s/%s)", filePath, repoURL, sha, filePath)
 }
+
+// AIFeedback represents structured feedback for AI assistants like Claude
+type AIFeedback struct {
+	Summary         AIFeedbackSummary `json:"summary"`
+	FilesToFix      []AIFileFeedback  `json:"files_to_fix"`
+	ApprovedFiles   []string          `json:"approved_files"`
+	PatternExamples []AIPatternRef    `json:"pattern_examples"`
+	Instructions    string            `json:"instructions"`
+}
+
+// AIFeedbackSummary provides high-level context
+type AIFeedbackSummary struct {
+	TotalFiles      int    `json:"total_files"`
+	NeedsFixes      int    `json:"needs_fixes"`
+	AutoApproved    int    `json:"auto_approved"`
+	PrimaryLanguage string `json:"primary_language"`
+}
+
+// AIFileFeedback describes issues in a specific file
+type AIFileFeedback struct {
+	FilePath       string             `json:"file_path"`
+	PatternType    string             `json:"pattern_type"`
+	MatchScore     float64            `json:"match_score"`
+	Issues         []AIIssue          `json:"issues"`
+	ReferenceFile  string             `json:"reference_file,omitempty"`
+	ExpectedImports []string          `json:"expected_imports,omitempty"`
+}
+
+// AIIssue describes a single issue that needs fixing
+type AIIssue struct {
+	Type       string `json:"type"`        // "missing", "different", "novel"
+	Element    string `json:"element"`
+	Expected   string `json:"expected,omitempty"`
+	Actual     string `json:"actual,omitempty"`
+	Suggestion string `json:"suggestion"`
+	LineNumber int    `json:"line_number,omitempty"`
+	Severity   string `json:"severity"` // "error", "warning", "info"
+}
+
+// AIPatternRef provides example code for a pattern
+type AIPatternRef struct {
+	PatternType string   `json:"pattern_type"`
+	PatternName string   `json:"pattern_name"`
+	ExampleFile string   `json:"example_file"`
+	KeyElements []string `json:"key_elements"`
+}
+
+// FormatAIFeedback generates AI-readable feedback that Claude can act upon
+func (r *Reporter) FormatAIFeedback(matches []patterns.PatternMatch, language string, patternList []patterns.Pattern) string {
+	feedback := AIFeedback{
+		Summary: AIFeedbackSummary{
+			TotalFiles:      len(matches),
+			PrimaryLanguage: language,
+		},
+		FilesToFix:      []AIFileFeedback{},
+		ApprovedFiles:   []string{},
+		PatternExamples: []AIPatternRef{},
+	}
+
+	// Collect pattern examples for reference
+	patternExamples := make(map[string]AIPatternRef)
+	for _, p := range patternList {
+		// Find best example file for this pattern
+		var exampleFile string
+		if len(p.AnnotatedGolden) > 0 {
+			exampleFile = p.AnnotatedGolden[0].Path
+		} else if len(p.ConfigBlessed) > 0 {
+			exampleFile = p.ConfigBlessed[0].Path
+		} else if len(p.Discovered) > 0 {
+			exampleFile = p.Discovered[0].Path
+		}
+
+		if exampleFile != "" {
+			keyElements := []string{}
+			for _, elem := range p.Structure.Required {
+				keyElements = append(keyElements, elem)
+			}
+			patternExamples[string(p.Type)] = AIPatternRef{
+				PatternType: string(p.Type),
+				PatternName: p.Name,
+				ExampleFile: exampleFile,
+				KeyElements: keyElements,
+			}
+		}
+	}
+
+	for _, match := range matches {
+		if match.AutoApprove {
+			feedback.ApprovedFiles = append(feedback.ApprovedFiles, match.FilePath)
+			feedback.Summary.AutoApproved++
+		} else {
+			fileFeedback := AIFileFeedback{
+				FilePath:   match.FilePath,
+				MatchScore: match.Score,
+				Issues:     []AIIssue{},
+			}
+
+			if match.Pattern != nil {
+				fileFeedback.PatternType = string(match.Pattern.Type)
+
+				// Get reference file
+				if match.GoldenRef != nil {
+					fileFeedback.ReferenceFile = match.GoldenRef.Path
+				} else if match.BlessedRef != nil {
+					fileFeedback.ReferenceFile = match.BlessedRef.Path
+				} else if match.DiscoveredRef != nil {
+					fileFeedback.ReferenceFile = match.DiscoveredRef.Path
+				}
+
+				// Add expected imports from structure
+				for _, elem := range match.Pattern.Structure.Elements {
+					if elem.Type == patterns.ElementImport {
+						fileFeedback.ExpectedImports = append(fileFeedback.ExpectedImports, elem.Name)
+					}
+				}
+
+				// Add pattern example if not already present
+				if _, exists := patternExamples[string(match.Pattern.Type)]; !exists && fileFeedback.ReferenceFile != "" {
+					patternExamples[string(match.Pattern.Type)] = AIPatternRef{
+						PatternType: string(match.Pattern.Type),
+						PatternName: match.Pattern.Name,
+						ExampleFile: fileFeedback.ReferenceFile,
+					}
+				}
+			}
+
+			// Convert deviations to issues
+			for _, dev := range match.Deviations {
+				issue := AIIssue{
+					Type:       string(dev.Type),
+					Element:    dev.Element,
+					Expected:   dev.Expected,
+					Actual:     dev.Actual,
+					Suggestion: dev.Suggestion,
+					LineNumber: dev.LineNumber,
+					Severity:   string(dev.Severity),
+				}
+				fileFeedback.Issues = append(fileFeedback.Issues, issue)
+			}
+
+			feedback.FilesToFix = append(feedback.FilesToFix, fileFeedback)
+			feedback.Summary.NeedsFixes++
+		}
+	}
+
+	// Convert pattern examples map to slice
+	for _, example := range patternExamples {
+		feedback.PatternExamples = append(feedback.PatternExamples, example)
+	}
+
+	// Generate instructions for AI
+	feedback.Instructions = generateAIInstructions(feedback)
+
+	jsonBytes, _ := json.MarshalIndent(feedback, "", "  ")
+	return string(jsonBytes)
+}
+
+// generateAIInstructions creates clear instructions for Claude/AI to follow
+func generateAIInstructions(feedback AIFeedback) string {
+	if feedback.Summary.NeedsFixes == 0 {
+		return "All files follow established patterns. No changes required."
+	}
+
+	var sb strings.Builder
+	sb.WriteString("INSTRUCTIONS FOR FIXING CODE:\n\n")
+	sb.WriteString("1. Read each reference_file to understand the expected pattern\n")
+	sb.WriteString("2. For each file in files_to_fix:\n")
+	sb.WriteString("   - Compare against the reference pattern\n")
+	sb.WriteString("   - Apply the suggestions from each issue\n")
+	sb.WriteString("   - Ensure all expected_imports are present\n")
+	sb.WriteString("3. After making changes, run 'cr check' to verify fixes\n\n")
+
+	sb.WriteString("PRIORITY:\n")
+	errorCount := 0
+	warningCount := 0
+	for _, file := range feedback.FilesToFix {
+		for _, issue := range file.Issues {
+			if issue.Severity == "error" {
+				errorCount++
+			} else if issue.Severity == "warning" {
+				warningCount++
+			}
+		}
+	}
+
+	if errorCount > 0 {
+		sb.WriteString(fmt.Sprintf("- Fix %d error(s) first (blocking issues)\n", errorCount))
+	}
+	if warningCount > 0 {
+		sb.WriteString(fmt.Sprintf("- Then address %d warning(s)\n", warningCount))
+	}
+
+	return sb.String()
+}
+
+// FormatSkillFile generates a skill file that can be used across projects
+func (r *Reporter) FormatSkillFile(patternList []patterns.Pattern, language string) string {
+	skillFile := SkillFile{
+		Version:  "1.0",
+		Language: language,
+		Skills:   []Skill{},
+	}
+
+	for _, p := range patternList {
+		skill := Skill{
+			ID:          p.ID,
+			Name:        p.Name,
+			Type:        string(p.Type),
+			Description: generateSkillDescription(p),
+			Detection: SkillDetection{
+				FilePattern:   p.Detection.FilePattern,
+				FuncPattern:   p.Detection.FuncPattern,
+				StructPattern: p.Detection.StructPattern,
+			},
+			Structure: SkillStructure{
+				Required: p.Structure.Required,
+				Optional: p.Structure.Optional,
+			},
+			Examples: []string{},
+		}
+
+		// Add example files
+		for _, g := range p.AnnotatedGolden {
+			skill.Examples = append(skill.Examples, g.Path)
+		}
+		for _, b := range p.ConfigBlessed {
+			skill.Examples = append(skill.Examples, b.Path)
+		}
+		// Limit discovered examples to prevent bloat
+		maxDiscovered := 3
+		for i, d := range p.Discovered {
+			if i >= maxDiscovered {
+				break
+			}
+			skill.Examples = append(skill.Examples, d.Path)
+		}
+
+		skillFile.Skills = append(skillFile.Skills, skill)
+	}
+
+	jsonBytes, _ := json.MarshalIndent(skillFile, "", "  ")
+	return string(jsonBytes)
+}
+
+// SkillFile represents a portable skill definition
+type SkillFile struct {
+	Version  string  `json:"version"`
+	Language string  `json:"language"`
+	Skills   []Skill `json:"skills"`
+}
+
+// Skill represents a single pattern skill
+type Skill struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Type        string         `json:"type"`
+	Description string         `json:"description"`
+	Detection   SkillDetection `json:"detection"`
+	Structure   SkillStructure `json:"structure"`
+	Examples    []string       `json:"examples"`
+}
+
+// SkillDetection defines how to identify this pattern
+type SkillDetection struct {
+	FilePattern   string `json:"file_pattern,omitempty"`
+	FuncPattern   string `json:"func_pattern,omitempty"`
+	StructPattern string `json:"struct_pattern,omitempty"`
+}
+
+// SkillStructure defines what the pattern should contain
+type SkillStructure struct {
+	Required []string `json:"required,omitempty"`
+	Optional []string `json:"optional,omitempty"`
+}
+
+// generateSkillDescription creates a human-readable description of the pattern
+func generateSkillDescription(p patterns.Pattern) string {
+	var desc string
+	switch p.Type {
+	case patterns.PatternHTTPHandler:
+		desc = "HTTP handler pattern for processing web requests"
+	case patterns.PatternService:
+		desc = "Service layer pattern for business logic"
+	case patterns.PatternRepository:
+		desc = "Repository pattern for data access"
+	case patterns.PatternMiddleware:
+		desc = "Middleware pattern for request/response processing"
+	case patterns.PatternComponent:
+		desc = "React component pattern for UI elements"
+	case patterns.PatternHook:
+		desc = "Custom React hook pattern for reusable stateful logic"
+	case patterns.PatternAPI:
+		desc = "API route handler pattern for backend endpoints"
+	case patterns.PatternStore:
+		desc = "State management pattern for global state"
+	default:
+		desc = fmt.Sprintf("Pattern for %s code organization", p.Name)
+	}
+	return desc
+}
