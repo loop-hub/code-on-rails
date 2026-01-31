@@ -6,50 +6,49 @@ Code on Rails (`cr`) learns your codebase patterns and ensures AI-generated code
 
 ## 🔄 The Feedback Loop (Key Feature)
 
-The killer feature of Code on Rails is the **complete feedback loop** between your codebase and AI assistants:
+The killer feature of Code on Rails is the **fully automatic feedback loop** - zero manual steps required:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     AI FEEDBACK LOOP                            │
+│                  AUTOMATIC AI FEEDBACK LOOP                     │
 │                                                                 │
-│   ┌──────────┐    cr check    ┌──────────┐    cr feedback      │
-│   │   AI     │ ───────────────▸│  Analyze │ ──────────────────▸│
-│   │ Writes   │                 │  Code    │                     │
-│   │  Code    │                 └──────────┘                     │
-│   └──────────┘                                                  │
-│        ▲                                     │                  │
-│        │                                     │                  │
-│        │         ┌──────────────┐            │                  │
-│        └─────────│ AI-Readable  │◀───────────┘                  │
-│      AI reads    │  Feedback    │                               │
-│     & fixes      │  (JSON)      │                               │
-│                  └──────────────┘                               │
+│   ┌──────────┐              ┌──────────┐                       │
+│   │  Claude  │──── push ───▸│  GitHub  │                       │
+│   │  writes  │              │    CI    │                       │
+│   │   code   │              └────┬─────┘                       │
+│   └──────────┘                   │                             │
+│        ▲                         │ commits                     │
+│        │                         ▼                             │
+│        │              ┌─────────────────────┐                  │
+│        └──── reads ───│ .code-on-rails-     │                  │
+│                       │  feedback.json      │                  │
+│                       └─────────────────────┘                  │
+│                                                                 │
+│   Claude automatically reads feedback file and fixes issues    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Three Ways to Use the Feedback Loop
+### How It Works (Zero Manual Steps)
 
-**1. Single Developer with Claude**
-```bash
-# After writing code, check patterns
-cr check
+1. **Claude writes code** and pushes to branch
+2. **GitHub CI runs** `cr check` and finds pattern deviations
+3. **CI commits** `.code-on-rails-feedback.json` to the branch
+4. **Claude reads the feedback file** automatically (via skill)
+5. **Claude fixes the issues** and pushes again
+6. **CI passes** - feedback file removed
 
-# Get AI-readable feedback
-cr feedback -o feedback.json
+### Two Ways to Share Patterns
 
-# Share with Claude: "Fix these issues" + paste feedback.json
-```
-
-**2. Team with Shared Skills (Recommended)**
+**1. Team with Shared Skills (Recommended)**
 ```bash
 # Generate portable skills file for your team
 cr learn --update-skills
 
-# Team members use .code-on-rails-skills.json with their AI assistants
+# Commit .code-on-rails-skills.json to repo
 # Everyone's AI generates code matching team patterns
 ```
 
-**3. Enterprise with Central Skills Repository**
+**2. Enterprise with Central Skills Repository**
 ```bash
 # Store skills in a central repo
 cr learn --update-skills -s skills/go-microservices.json
@@ -141,7 +140,11 @@ jobs:
 
 ---
 ### 🔄 AI Feedback Loop
-Download the [AI feedback artifact](...) to get structured feedback for your AI assistant.
+
+📝 **Feedback file committed to branch**: `.code-on-rails-feedback.json`
+
+Claude will automatically read this file and fix the issues.
+Just ask: *"Check for Code on Rails feedback and fix any issues"*
 ```
 
 **AI Feedback Artifact (cr-ai-feedback.json):**
@@ -326,21 +329,26 @@ detection:
 # 1. Developer asks Claude to write code
 "Create a payment service"
 
-# 2. Claude writes code (may not match patterns)
-# 3. Run check in CI/CD
-cr check --format github
+# 2. Claude writes code and pushes to branch
 
-# 4. CI posts comment showing issues
-# 5. Download AI feedback artifact
-cr feedback -o feedback.json
+# 3. GitHub CI runs automatically:
+#    - Analyzes code with cr check
+#    - Commits .code-on-rails-feedback.json to branch (if issues found)
+#    - Posts PR comment with summary
 
-# 6. Share feedback with Claude
-"Here's feedback from Code on Rails. Please fix these issues:"
-[paste feedback.json]
+# 4. Developer asks Claude to fix (or Claude reads feedback automatically)
+"Check for Code on Rails feedback and fix any issues"
 
-# 7. Claude fixes the code using reference patterns
-# 8. Push fixes → CI passes ✅
+# 5. Claude reads .code-on-rails-feedback.json
+#    - Studies reference files
+#    - Fixes each issue
+#    - Deletes feedback file
+#    - Pushes fixes
+
+# 6. CI passes ✅ - all patterns match
 ```
+
+**With the Claude skill installed, step 4-5 happens automatically!**
 
 ## License
 

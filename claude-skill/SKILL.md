@@ -7,21 +7,101 @@ description: Automatically enforce codebase patterns when writing code. Use this
 
 This skill enables Claude Code to automatically follow your codebase patterns by reading the `.code-on-rails.yml` configuration file.
 
+## Automatic Feedback Loop (Priority Check)
+
+**IMPORTANT**: Before starting any work, ALWAYS check for a feedback file:
+
+```bash
+cat .code-on-rails-feedback.json 2>/dev/null || echo "No feedback file"
+```
+
+If this file exists, it contains AI-readable feedback from the CI workflow about pattern deviations that need fixing. **Read it first and fix the issues before doing anything else.**
+
+### Reading the Feedback File
+
+The feedback file structure:
+
+```json
+{
+  "summary": {
+    "total_files": 5,
+    "needs_fixes": 2,
+    "auto_approved": 3
+  },
+  "files_to_fix": [
+    {
+      "file_path": "src/handlers/payment.go",
+      "pattern_type": "http_handler",
+      "issues": [
+        {
+          "element": "error_handling",
+          "expected": "errors.Wrap",
+          "suggestion": "Use errors.Wrap for error context"
+        }
+      ],
+      "reference_file": "src/handlers/user_handler.go"
+    }
+  ],
+  "instructions": "..."
+}
+```
+
+### Fixing Feedback Issues
+
+1. **Read the reference file** for each file that needs fixes:
+   ```bash
+   view <reference_file>
+   ```
+
+2. **Read the file that needs fixes**:
+   ```bash
+   view <file_path>
+   ```
+
+3. **Apply each fix** based on the suggestion, matching the reference pattern
+
+4. **Verify the fix**:
+   ```bash
+   cr check <file_path>
+   ```
+
+5. **Delete the feedback file** once all issues are resolved:
+   ```bash
+   rm .code-on-rails-feedback.json
+   ```
+
+6. **Commit the fixes**:
+   ```bash
+   git add -A && git commit -m "fix: resolve Code on Rails pattern deviations"
+   git push
+   ```
+
+---
+
 ## When to Use
 
 Automatically triggers when:
 - A `.code-on-rails.yml` file exists in the project
+- A `.code-on-rails-feedback.json` file exists (fix issues first!)
 - User requests code generation (handlers, services, models, etc.)
 - User asks to "follow our patterns" or "match existing code"
 
 ## How It Works
 
-### 1. Read Configuration
+### 1. Check for Feedback (Always First!)
+
+```bash
+cat .code-on-rails-feedback.json 2>/dev/null
+```
+
+If feedback exists, fix those issues before proceeding.
+
+### 2. Read Configuration
 
 Before writing any code, read the pattern definitions:
 
 ```bash
-view .code-on-rails.yml
+cat .code-on-rails.yml
 ```
 
 This shows:
@@ -30,7 +110,7 @@ This shows:
 - **Required elements**: Imports, error handling, validation patterns
 - **Detection rules**: File naming conventions
 
-### 2. Study Reference Files
+### 3. Study Reference Files
 
 For the pattern type you're creating, examine the reference implementations:
 
@@ -50,7 +130,7 @@ Look for:
 - Naming conventions
 - Code structure and flow
 
-### 3. Generate Code Following Patterns
+### 4. Generate Code Following Patterns
 
 When writing code:
 
@@ -68,10 +148,10 @@ When writing code:
 - Transaction patterns (for database code)
 
 **Follow the example flow**:
-If reference handler does: validate → service call → response,
+If reference handler does: validate -> service call -> response,
 Your handler should follow the same flow.
 
-### 4. Self-Check
+### 5. Self-Check
 
 Before finishing, verify your code:
 
@@ -168,12 +248,12 @@ type productRepo struct {
 
 func (r *productRepo) FindByID(id string) (*Product, error) {
     var product Product
-    
+
     // Match transaction pattern if required
     if err := r.db.First(&product, "id = ?", id).Error; err != nil {
         return nil, err
     }
-    
+
     return &product, nil
 }
 ```
@@ -209,77 +289,42 @@ For each pattern:
 
 User: "Create a product search handler"
 
-1. **Read config**:
+1. **Check for feedback first**:
    ```bash
-   view .code-on-rails.yml
+   cat .code-on-rails-feedback.json 2>/dev/null
    ```
-   → Identifies `http_handler_pattern`
+   -> If exists, fix those issues first!
 
-2. **Study reference**:
+2. **Read config**:
+   ```bash
+   cat .code-on-rails.yml
+   ```
+   -> Identifies `http_handler_pattern`
+
+3. **Study reference**:
    ```bash
    view internal/handlers/user_handler.go
    ```
-   → Notes: uses validator.v10, errors.Wrap, 3-step flow
+   -> Notes: uses validator.v10, errors.Wrap, 3-step flow
 
-3. **Generate code** matching the pattern:
+4. **Generate code** matching the pattern:
    - Same imports
    - Same error handling
    - Same validation approach
    - Same structure
 
-4. **Verify**:
+5. **Verify**:
    ```bash
    cr check internal/handlers/product_search_handler.go
    ```
-   → Should show 95%+ match
-
-5. **Commit with tag**:
-   ```bash
-   git commit -m "[claude] Add product search handler"
-   ```
+   -> Should show 95%+ match
 
 ## Anti-Patterns to Avoid
 
-❌ **Don't** invent new patterns when one exists:
-```go
-// BAD: New error handling when reference uses errors.Wrap
-return fmt.Errorf("error: %v", err)
-
-// GOOD: Match reference pattern
-return errors.Wrap(err, "failed to process")
-```
-
-❌ **Don't** skip required imports:
-```go
-// BAD: Missing required validation
-func Handler(w http.ResponseWriter, r *http.Request) {
-    // No validation...
-}
-
-// GOOD: Include validation like reference
-func Handler(w http.ResponseWriter, r *http.Request) {
-    if err := validator.Validate(req); err != nil {
-        // ...
-    }
-}
-```
-
-❌ **Don't** reorder the flow arbitrarily:
-```go
-// BAD: Different order than reference
-func Handler(...) {
-    result := service.Call()
-    validate()
-    return result
-}
-
-// GOOD: Same flow as reference
-func Handler(...) {
-    validate()
-    result := service.Call()
-    return result
-}
-```
+- **Don't** invent new patterns when one exists
+- **Don't** skip required imports
+- **Don't** reorder the flow arbitrarily
+- **Don't** ignore the feedback file
 
 ## Configuration Not Found
 
@@ -299,50 +344,6 @@ By following patterns automatically:
 - **Faster reviews** - reviewers focus on business logic
 - **Less rework** - code matches expectations first time
 - **Better AI adoption** - confidence in AI-generated code
-
-## Tips
-
-1. **Always read the reference file** - Don't guess the pattern
-2. **Match exactly first time** - Easier than fixing later
-3. **Use the same libraries** - Don't introduce new dependencies
-4. **Follow the flow** - Structure matters, not just syntax
-5. **Self-check with cr** - Verify before committing
-
-## Advanced: Multiple Patterns
-
-If creating code that spans multiple patterns:
-
-```bash
-# Creating a feature with handler + service + repository
-
-# 1. Read all relevant patterns
-view .code-on-rails.yml
-
-# 2. Study each reference
-view internal/handlers/user_handler.go
-view internal/services/user_service.go  
-view internal/repository/user_repo.go
-
-# 3. Create each file following its pattern
-# Handler follows handler pattern
-# Service follows service pattern
-# Repository follows repository pattern
-
-# 4. Ensure they integrate like references do
-# Study how user_handler calls user_service
-# Study how user_service calls user_repo
-```
-
-## Updating Patterns
-
-If you notice the pattern should change:
-
-1. Implement the better approach
-2. Update `.code-on-rails.yml` to reflect it
-3. Update reference implementations
-4. Or suggest pattern update to team
-
-Don't silently deviate - either follow the pattern or propose changing it.
 
 ---
 
