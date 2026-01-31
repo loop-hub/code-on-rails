@@ -95,3 +95,17 @@ settings:
     learn_on_merge: true
 detection:
     method: heuristic
+    commit_prefixes:
+        - '[ai'
+        - '[claude'
+        - '[copilot'
+        - '[cursor'
+    branch_prefixes:
+        - claude/
+        - ai/
+        - copilot/
+        - cursor/
+        - claude-
+        - ai-
+        - copilot-
+        - cursor-
